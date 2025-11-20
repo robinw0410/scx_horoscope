@@ -156,3 +156,8 @@ Contributions welcome! The core scheduler is working, but there's always room fo
 ---
 
 *"In space, no one can hear you schedule."*
+
+Comments from people:
+
+- "You've made it work, but at what cost!"
+
