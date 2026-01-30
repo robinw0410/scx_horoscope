@@ -6,28 +6,19 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs =
-    {
-      self,
-      nixpkgs,
-      flake-utils,
-    }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = import nixpkgs { inherit system; };
-      in
-      {
-        packages = {
-          scx_horoscope = pkgs.callPackage ./nix/package.nix { };
-          default = self.packages.${system}.scx_horoscope;
-        };
+  outputs = { self, nixpkgs, flake-utils, ... }:
+    (flake-utils.lib.eachDefaultSystem (system:
+      let pkgs = nixpkgs.legacyPackages.${system};
+      in {
+        packages.scx_horoscope = pkgs.callPackage ./nix/package.nix { };
+        packages.default = self.packages.${system}.scx_horoscope;
+      })) // {
+        nixosModules.default = { config, lib, pkgs, ... }: {
+          imports = [ ./nix/module.nix ];
 
-        nixosModules = {
-          scx_horoscope = import ./nix/module.nix;
-          default = self.nixosModules.scx_horoscope;
+          services.scx_horoscope.package =
+            lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.scx_horoscope;
         };
-      }
-    );
+      };
 }
 

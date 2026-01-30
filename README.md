@@ -85,8 +85,39 @@ if retrograde: time_slice × 0.5
 
 ## Installation
 
+**NOTE:** userspace schedulers require kernels 6.12 or later.
+
 ```bash
 cargo build --release
+```
+
+If you're using NixOS, you can also add provided flake like this (25.11+ required):
+
+```nix
+  # Include this flake
+  inputs.scx_horoscope.url = "github:zampierilucas/scx_horoscope";
+
+  ...
+
+  # Include module
+  outputs = { self, nixpkgs, scx_horoscope, ... }@inputs: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        scx_horoscope.nixosModules.default
+      ];
+    };
+  };
+```
+
+And then somewhere later in your system configuration:
+
+```nix
+  services.scx_horoscope = {
+    enable = true;
+
+    # Add options as needed
+    extraArgs = [ "--cosmic-weather" ];
+  };
 ```
 
 ## Usage

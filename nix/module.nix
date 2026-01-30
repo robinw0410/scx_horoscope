@@ -1,25 +1,20 @@
-{
-  config,
-  lib,
-  pkgs,
-  ...
-}:
+{ config, lib, pkgs, ... }:
 
-let
-  cfg = config.services.scx_horoscope;
-in
-{
+let cfg = config.services.scx_horoscope;
+in {
   options.services.scx_horoscope = {
     enable = lib.mkEnableOption "Astrological CPU scheduler";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.scx_horoscope;
+      description = "The scheduler package to use";
+    };
 
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.singleLineStr;
       default = [ ];
-      example = [
-        "--slice-us 5000"
-        "--cosmic-weather"
-        "--verbose"
-      ];
+      example = [ "--slice-us 5000" "--cosmic-weather" "--verbose" ];
       description = ''
         Additional runtime scheduler parameters.
 
@@ -40,17 +35,11 @@ in
 
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${lib.getExe pkgs.scx_horoscope} ${lib.escapeShellArgs cfg.extraArgs}";
+        ExecStart =
+          "${lib.getExe cfg.package} ${lib.escapeShellArgs cfg.extraArgs}";
         Restart = "on-failure";
       };
     };
-
-    assertions = [
-      {
-        assertion = config.boot.kernelPackages.kernel.versionAtLeast "6.12";
-        message = "sched_ext schedulers require kernels 6.12 or later";
-      }
-    ];
   };
 }
 
