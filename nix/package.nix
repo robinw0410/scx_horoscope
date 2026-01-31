@@ -5,7 +5,13 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   src = ../.;
 
-  cargoHash = "sha256-smzOODMTSy1ISmUfIrC/7DffHB2+dcLx9kAtMAg7JTE=";
+  cargoLock = {
+    lockFile = ../Cargo.lock;
+
+    outputHashes = {
+      "astro-2.0.0" = "sha256-flbj54M2ipvrR4xYTMV4d9zUTJVJJANx62Wh6XYr4zY=";
+    };
+  };
 
   nativeBuildInputs = [ pkg-config rustPlatform.bindgenHook ];
   buildInputs = [ elfutils zlib libseccomp ];
