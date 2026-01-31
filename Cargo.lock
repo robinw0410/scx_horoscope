@@ -94,8 +94,7 @@ dependencies = [
 [[package]]
 name = "astro"
 version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "199632e1a87451cf771da7adeba192cab923ede42657ac3de0133ba6f4ae14be"
+source = "git+https://github.com/saurvs/astro-rust#c62ffdc7d55adfa1ee835fc7006d42d967bc4836"
 
 [[package]]
 name = "autocfg"
