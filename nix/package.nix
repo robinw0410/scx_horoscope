@@ -1,10 +1,8 @@
 { lib, rustPlatform, llvmPackages, pkg-config, elfutils, zlib, libseccomp, }:
-let
-  cargoFile = builtins.fromTOML (builtins.readFile ../Cargo.toml);
-  version = cargoFile.package.version;
+let cargoFile = builtins.fromTOML (builtins.readFile ../Cargo.toml);
 in rustPlatform.buildRustPackage (finalAttrs: {
-  inherit version;
-  pname = "scx_horoscope";
+  pname = cargoFile.package.name;
+  version = cargoFile.package.version;
 
   src = ../.;
 
