@@ -1,4 +1,6 @@
-use super::planets::{Planet, Element, PlanetaryPosition, MoonPhase, calculate_planetary_positions};
+use super::planets::{Planet, Element, PlanetaryPosition, MoonPhase, calculate_planetary_positions_with_zodiac};
+#[cfg(test)]
+use super::planets::calculate_planetary_positions;
 use super::tasks::{TaskType, TaskClassifier};
 use chrono::{DateTime, Utc};
 
@@ -17,15 +19,27 @@ pub struct AstrologicalScheduler {
     classifier: TaskClassifier,
     planetary_cache: Option<(DateTime<Utc>, Vec<PlanetaryPosition>)>,
     cache_duration_secs: i64,
+    use_13_signs: bool,  // Use 13-sign zodiac with Ophiuchus (IAU boundaries)
 }
 
 impl AstrologicalScheduler {
     pub fn new(cache_duration_secs: i64) -> Self {
+        Self::with_options(cache_duration_secs, false)
+    }
+
+    pub fn with_options(cache_duration_secs: i64, use_13_signs: bool) -> Self {
         Self {
             classifier: TaskClassifier::new(),
             planetary_cache: None,
             cache_duration_secs,
+            use_13_signs,
         }
+    }
+
+    /// Returns whether the 13-sign zodiac (with Ophiuchus) is enabled
+    #[allow(dead_code)]  // Public API
+    pub fn uses_13_signs(&self) -> bool {
+        self.use_13_signs
     }
 
     fn get_planetary_positions(&mut self, now: DateTime<Utc>) -> &Vec<PlanetaryPosition> {
@@ -37,7 +51,7 @@ impl AstrologicalScheduler {
         };
 
         if needs_refresh {
-            let positions = calculate_planetary_positions(now);
+            let positions = calculate_planetary_positions_with_zodiac(now, self.use_13_signs);
             self.planetary_cache = Some((now, positions));
         }
 
@@ -241,11 +255,17 @@ impl AstrologicalScheduler {
     /// Get a summary of current astrological conditions
     pub fn get_cosmic_weather(&mut self, now: DateTime<Utc>) -> String {
         use std::fmt::Write;
-        let positions = self.get_planetary_positions(now);
 
         let mut report = String::from("🌌 COSMIC WEATHER REPORT 🌌\n");
         let _ = writeln!(report, "Current time: {}", now.format("%Y-%m-%d %H:%M:%S UTC"));
+        if self.use_13_signs {
+            report.push_str("Zodiac system: 13-sign (IAU boundaries with Ophiuchus)\n");
+        } else {
+            report.push_str("Zodiac system: Traditional 12-sign (tropical)\n");
+        }
         report.push('\n');
+
+        let positions = self.get_planetary_positions(now);
 
         for pos in positions {
             let phase_info = if let Some(phase) = pos.moon_phase {

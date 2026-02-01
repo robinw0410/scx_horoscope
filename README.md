@@ -37,7 +37,7 @@ Each planet rules specific types of system tasks:
 Zodiac sign elements create elemental affinities and oppositions:
 
 **Boosted Combinations** (tasks thrive under compatible elements):
-- **🔥 Fire** (Aries, Leo, Sagittarius) × CPU tasks: 1.5x boost
+- **🔥 Fire** (Aries, Leo, Sagittarius, Ophiuchus*) × CPU tasks: 1.5x boost
 - **🌬️ Air** (Gemini, Libra, Aquarius) × Network tasks: 1.5x boost
 - **🌍 Earth** (Taurus, Virgo, Capricorn) × System tasks: 1.4x boost
 - **💧 Water** (Cancer, Scorpio, Pisces) × Memory tasks: 1.3x boost
@@ -49,6 +49,8 @@ Zodiac sign elements create elemental affinities and oppositions:
 - **🔥 Fire** × Memory tasks: 0.7x (fire evaporates water)
 
 All other combinations are neutral (1.0x).
+
+*Ophiuchus (the 13th sign) is available with `--ophiuchus` flag, using IAU constellation boundaries.
 
 ### Retrograde Effects
 
@@ -144,6 +146,7 @@ sudo target/release/scx_horoscope --debug-decisions
 **Astrological Options:**
 - `-w, --cosmic-weather` - Display planetary positions and astrological guidance on startup
 - `-d, --debug-decisions` - Watch the cosmos make scheduling decisions in real-time
+- `--ophiuchus` - Use 13-sign zodiac with Ophiuchus (IAU constellation boundaries)
 - `--no-retrograde` - Boring mode (disables retrograde chaos)
 - `-u, --update-interval <SECS>` - Update planetary positions every N seconds (default: 60)
 
