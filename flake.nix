@@ -16,8 +16,8 @@
         nixosModules.default = { config, lib, pkgs, ... }: {
           imports = [ ./nix/module.nix ];
 
-          services.scx_horoscope.package =
-            lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.scx_horoscope;
+          services.scx_horoscope.package = lib.mkDefault
+            self.packages.${pkgs.stdenv.hostPlatform.system}.scx_horoscope;
         };
       };
 }
