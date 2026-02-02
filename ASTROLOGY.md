@@ -1,5 +1,31 @@
 # Astrological Scheduling Formulas
 
+## Zodiac Systems
+
+By default, this scheduler uses the **traditional 12-sign tropical zodiac** with equal 30° divisions starting from the vernal equinox (0° Aries).
+
+### Optional: 13-Sign Zodiac with Ophiuchus (`--ophiuchus` flag)
+
+When the `--ophiuchus` flag is enabled, the scheduler uses the astronomically accurate 13-sign zodiac with IAU constellation boundaries, including **Ophiuchus** (the serpent-bearer) between Scorpio and Sagittarius.
+
+| Sign | Ecliptic Longitude | Approximate Duration |
+|------|-------------------|---------------------|
+| Pisces | 351.5° - 29.0° | ~37° |
+| Aries | 29.0° - 53.5° | ~24.5° |
+| Taurus | 53.5° - 90.5° | ~37° |
+| Gemini | 90.5° - 118.0° | ~27.5° |
+| Cancer | 118.0° - 138.0° | ~20° |
+| Leo | 138.0° - 174.0° | ~36° |
+| Virgo | 174.0° - 218.0° | ~44° |
+| Libra | 218.0° - 241.0° | ~23° |
+| Scorpio | 241.0° - 248.0° | ~7° |
+| **Ophiuchus** | **248.0° - 266.0°** | **~18°** |
+| Sagittarius | 266.0° - 299.5° | ~33.5° |
+| Capricorn | 299.5° - 327.5° | ~28° |
+| Aquarius | 327.5° - 351.5° | ~24° |
+
+Note: In 13-sign mode, signs have unequal lengths. Scorpio is particularly narrow (~7°), while Virgo is the largest (~44°). Many traditional Scorpios will find themselves in Libra or Ophiuchus!
+
 ## Priority Calculation
 
 ```
@@ -25,7 +51,10 @@ Desktop: 120    |  CPU/Network: 100  |  Memory: 80
 **Retrograde**: `-1.0` (applies 50% time slice penalty)
 
 **Direct** (by element of zodiac sign):
-- Fire: `1.3` | Air: `1.2` | Earth: `1.1` | Water: `1.0`
+- Fire (Aries, Leo, Sagittarius, Ophiuchus): `1.3`
+- Air (Gemini, Libra, Aquarius): `1.2`
+- Earth (Taurus, Virgo, Capricorn): `1.1`
+- Water (Cancer, Scorpio, Pisces): `1.0`
 
 ## Element Boost/Debuff
 

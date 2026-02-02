@@ -59,6 +59,11 @@ struct Opts {
     /// Disable retrograde effects (boring mode)
     #[clap(long)]
     no_retrograde: bool,
+
+    /// Use 13-sign zodiac with Ophiuchus (IAU constellation boundaries)
+    /// By default, uses traditional 12-sign tropical zodiac
+    #[clap(long)]
+    ophiuchus: bool,
 }
 
 struct Scheduler<'a> {
@@ -85,7 +90,7 @@ impl<'a> Scheduler<'a> {
         )?;
 
         #[allow(clippy::cast_possible_wrap)]
-        let astro = AstrologicalScheduler::new(opts.update_interval as i64);
+        let astro = AstrologicalScheduler::with_options(opts.update_interval as i64, opts.ophiuchus);
         let last_update = Self::now();
 
         Ok(Self { bpf, astro, opts, last_update })
@@ -212,6 +217,7 @@ impl<'a> Scheduler<'a> {
         info!("  Min time slice: {}μs", self.opts.slice_us_min);
         info!("  Planetary update interval: {}s", self.opts.update_interval);
         info!("  Retrograde effects: {}", if self.opts.no_retrograde { "DISABLED" } else { "ENABLED" });
+        info!("  Zodiac system: {}", if self.opts.ophiuchus { "13-sign (with Ophiuchus)" } else { "Traditional 12-sign" });
 
         while !self.bpf.exited() {
             self.dispatch_tasks();
