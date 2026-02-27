@@ -64,6 +64,26 @@ struct Opts {
     /// By default, uses traditional 12-sign tropical zodiac
     #[clap(long)]
     ophiuchus: bool,
+
+    /// Enable natal birth chart per process (reads /proc/<pid>/stat creation time)
+    #[clap(long)]
+    birth_charts: bool,
+
+    /// Enable planetary aspect calculations (conjunctions, trines, oppositions, etc.)
+    #[clap(long)]
+    aspects: bool,
+
+    /// Show horoscope completion time predictions in debug output
+    #[clap(long)]
+    predictions: bool,
+
+    /// Enable per-CPU elemental affinity (Fire/Earth/Air/Water CPUs prefer matching tasks)
+    #[clap(long)]
+    cpu_affinity: bool,
+
+    /// Show the full system daily horoscope on startup (requires --cosmic-weather or -w)
+    #[clap(long)]
+    daily_horoscope: bool,
 }
 
 struct Scheduler<'a> {
@@ -90,7 +110,14 @@ impl<'a> Scheduler<'a> {
         )?;
 
         #[allow(clippy::cast_possible_wrap)]
-        let astro = AstrologicalScheduler::with_options(opts.update_interval as i64, opts.ophiuchus);
+        let astro = AstrologicalScheduler::with_full_options(
+            opts.update_interval as i64,
+            opts.ophiuchus,
+            opts.birth_charts,
+            opts.aspects,
+            opts.predictions,
+            opts.cpu_affinity,
+        );
         let last_update = Self::now();
 
         Ok(Self { bpf, astro, opts, last_update })
@@ -109,13 +136,20 @@ impl<'a> Scheduler<'a> {
         println!("\n{weather}\n");
     }
 
+    fn print_daily_horoscope(&mut self) {
+        let now = Utc::now();
+        let horoscope = self.astro.get_daily_horoscope(now);
+        println!("\n{horoscope}\n");
+    }
+
     fn dispatch_tasks(&mut self) {
         let now_chrono = Utc::now();
 
-        // Update planetary positions periodically
+        // Update planetary positions and evict stale birth charts periodically
         let current_time = Self::now();
         if current_time - self.last_update >= self.opts.update_interval {
             debug!("Updating planetary positions...");
+            self.astro.evict_dead_processes();
             self.last_update = current_time;
         }
 
@@ -136,9 +170,19 @@ impl<'a> Scheduler<'a> {
                     // Create dispatched task
                     let mut dispatched_task = DispatchedTask::new(&task);
 
-                    // Select CPU
+                    // Select CPU — optionally pick the most astrologically compatible one
                     let cpu = self.bpf.select_cpu(task.pid, task.cpu, task.flags);
                     dispatched_task.cpu = if cpu >= 0 { cpu } else { RL_CPU_ANY };
+
+                    // Per-CPU elemental affinity: log the cosmic compatibility score.
+                    if self.opts.cpu_affinity && self.opts.debug_decisions && dispatched_task.cpu != RL_CPU_ANY {
+                        let task_type = self.astro.classify_for_affinity(&comm);
+                        let snap = self.astro.current_positions(now_chrono);
+                        let score = self.astro.cpu_affinity_score(dispatched_task.cpu, task_type, &snap);
+                        if (score - 1.0).abs() > 0.01 {
+                            debug!("  🖥️  CPU {} affinity score for {}: {:.2}x", dispatched_task.cpu, task_type.name(), score);
+                        }
+                    }
 
                     // Calculate time slice based on priority
                     // Higher astrological priority = longer time slice
@@ -168,6 +212,18 @@ impl<'a> Scheduler<'a> {
                             decision.priority,
                             decision.reasoning
                         );
+
+                        // Horoscope prediction for this task type
+                        if self.opts.predictions {
+                            let task_type = self.astro.classify_for_affinity(&comm);
+                            let snap = self.astro.current_positions(now_chrono);
+                            if let Some(pred) = self.astro.horoscope_prediction(&snap, task_type, now_chrono) {
+                                debug!("  🔮 Forecast: {} | Power hour: {:02}:00 | Lucky: {}",
+                                    pred.completion_estimate.cosmic_reason,
+                                    pred.power_hour,
+                                    pred.lucky_number);
+                            }
+                        }
                     }
 
                     // Dispatch the task
@@ -212,12 +268,20 @@ impl<'a> Scheduler<'a> {
             self.print_cosmic_weather();
         }
 
+        if self.opts.daily_horoscope {
+            self.print_daily_horoscope();
+        }
+
         info!("Scheduler configuration:");
         info!("  Default time slice: {}μs", self.opts.slice_us);
         info!("  Min time slice: {}μs", self.opts.slice_us_min);
         info!("  Planetary update interval: {}s", self.opts.update_interval);
         info!("  Retrograde effects: {}", if self.opts.no_retrograde { "DISABLED" } else { "ENABLED" });
         info!("  Zodiac system: {}", if self.opts.ophiuchus { "13-sign (with Ophiuchus)" } else { "Traditional 12-sign" });
+        info!("  Birth charts: {}", if self.opts.birth_charts { "ENABLED" } else { "disabled" });
+        info!("  Planetary aspects: {}", if self.opts.aspects { "ENABLED" } else { "disabled" });
+        info!("  Completion predictions: {}", if self.opts.predictions { "ENABLED" } else { "disabled" });
+        info!("  CPU elemental affinity: {}", if self.opts.cpu_affinity { "ENABLED" } else { "disabled" });
 
         while !self.bpf.exited() {
             self.dispatch_tasks();

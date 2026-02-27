@@ -1,7 +1,11 @@
-use super::planets::{Planet, Element, PlanetaryPosition, MoonPhase, calculate_planetary_positions_with_zodiac};
+use super::planets::{Planet, Element, PlanetaryPosition, MoonPhase,
+                     calculate_planetary_positions_with_zodiac};
 #[cfg(test)]
 use super::planets::calculate_planetary_positions;
 use super::tasks::{TaskType, TaskClassifier};
+use super::aspects::{calculate_aspects, combined_aspect_modifier, describe_aspects};
+use super::birth_chart::ProcessRegistry;
+use super::predictions::{HoroscopePrediction, get_system_daily_horoscope};
 use chrono::{DateTime, Utc};
 
 /// Scheduling decision with astrological reasoning
@@ -19,7 +23,50 @@ pub struct AstrologicalScheduler {
     classifier: TaskClassifier,
     planetary_cache: Option<(DateTime<Utc>, Vec<PlanetaryPosition>)>,
     cache_duration_secs: i64,
-    use_13_signs: bool,  // Use 13-sign zodiac with Ophiuchus (IAU boundaries)
+    use_13_signs: bool,       // Use 13-sign zodiac with Ophiuchus (IAU boundaries)
+    birth_registry: ProcessRegistry,  // Natal charts for running processes
+    enable_birth_charts: bool,
+    enable_aspects: bool,
+    enable_predictions: bool,
+    enable_cpu_affinity: bool,
+}
+
+/// Which CPU element is "attuned" to a given CPU index (0-based)
+/// Cycle: Fire, Earth, Air, Water — groups of 3 CPUs each
+fn cpu_element(cpu_index: i32) -> Element {
+    match cpu_index.rem_euclid(4) {
+        0 => Element::Fire,
+        1 => Element::Earth,
+        2 => Element::Air,
+        _ => Element::Water,
+    }
+}
+
+/// Astrological compatibility between a task's element and a CPU's element.
+/// Returns a modifier to apply when computing CPU affinity preference.
+fn cpu_task_affinity(cpu_element: Element, task_element: Element) -> f64 {
+    if cpu_element == task_element {
+        return 1.5; // Perfect match — this CPU was born for this task
+    }
+    match (cpu_element, task_element) {
+        // Compatible pairs
+        (Element::Fire, Element::Air)   | (Element::Air, Element::Fire)   => 1.2,
+        (Element::Earth, Element::Water)| (Element::Water, Element::Earth) => 1.2,
+        // Opposing pairs
+        (Element::Fire, Element::Water) | (Element::Water, Element::Fire)  => 0.6,
+        (Element::Earth, Element::Air)  | (Element::Air, Element::Earth)   => 0.6,
+        _ => 1.0,
+    }
+}
+
+/// Map element to a simple zodiac sign for display in cosmic weather
+fn element_sign(element: Element) -> &'static str {
+    match element {
+        Element::Fire  => "Aries ♈",
+        Element::Earth => "Taurus ♉",
+        Element::Air   => "Gemini ♊",
+        Element::Water => "Cancer ♋",
+    }
 }
 
 impl AstrologicalScheduler {
@@ -28,11 +75,28 @@ impl AstrologicalScheduler {
     }
 
     pub fn with_options(cache_duration_secs: i64, use_13_signs: bool) -> Self {
+        Self::with_full_options(cache_duration_secs, use_13_signs, false, false, false, false)
+    }
+
+    /// Create scheduler with all feature flags
+    pub fn with_full_options(
+        cache_duration_secs: i64,
+        use_13_signs: bool,
+        enable_birth_charts: bool,
+        enable_aspects: bool,
+        enable_predictions: bool,
+        enable_cpu_affinity: bool,
+    ) -> Self {
         Self {
             classifier: TaskClassifier::new(),
             planetary_cache: None,
             cache_duration_secs,
             use_13_signs,
+            birth_registry: ProcessRegistry::new(use_13_signs),
+            enable_birth_charts,
+            enable_aspects,
+            enable_predictions,
+            enable_cpu_affinity,
         }
     }
 
@@ -40,6 +104,62 @@ impl AstrologicalScheduler {
     #[allow(dead_code)]  // Public API
     pub fn uses_13_signs(&self) -> bool {
         self.use_13_signs
+    }
+
+    /// Get a birth-chart compatibility modifier for a process
+    pub fn birth_chart_modifier(&mut self, pid: i32, current_positions: &[PlanetaryPosition], task_type: TaskType) -> f64 {
+        if !self.enable_birth_charts {
+            return 1.0;
+        }
+        self.birth_registry
+            .get_or_create(pid)
+            .map(|chart| chart.compatibility_with_current(current_positions, task_type))
+            .unwrap_or(1.0)
+    }
+
+    /// Pick the most astrologically compatible CPU for a task
+    /// Returns an optional CPU preference score (higher = better match)
+    pub fn cpu_affinity_score(&self, cpu_index: i32, task_type: TaskType, positions: &[PlanetaryPosition]) -> f64 {
+        if !self.enable_cpu_affinity {
+            return 1.0;
+        }
+
+        let cpu_elem = cpu_element(cpu_index);
+
+        // Task element from ruling planet's current sign
+        let ruling = task_type.ruling_planet();
+        let task_elem = positions.iter()
+            .find(|p| p.planet == ruling)
+            .map(|p| p.sign.element())
+            .unwrap_or(Element::Air);
+
+        cpu_task_affinity(cpu_elem, task_elem)
+    }
+
+    /// Generate a horoscope prediction for a task (for debug logging)
+    pub fn horoscope_prediction(&self, positions: &[PlanetaryPosition], task_type: TaskType, now: DateTime<Utc>) -> Option<HoroscopePrediction> {
+        if self.enable_predictions {
+            Some(HoroscopePrediction::generate(positions, task_type, &now))
+        } else {
+            None
+        }
+    }
+
+    /// Periodically evict dead processes from the birth chart registry
+    pub fn evict_dead_processes(&mut self) {
+        if self.enable_birth_charts {
+            self.birth_registry.evict_dead_processes();
+        }
+    }
+
+    /// Classify a task by command name (public wrapper for main.rs use)
+    pub fn classify_for_affinity(&self, comm: &str) -> TaskType {
+        self.classifier.classify(comm)
+    }
+
+    /// Return a snapshot of the current cached planetary positions
+    pub fn current_positions(&mut self, now: DateTime<Utc>) -> Vec<PlanetaryPosition> {
+        self.get_planetary_positions(now).clone()
     }
 
     fn get_planetary_positions(&mut self, now: DateTime<Utc>) -> &Vec<PlanetaryPosition> {
@@ -90,6 +210,34 @@ impl AstrologicalScheduler {
         }
     }
 
+    /// Moon phase modifier scaled for memory/I-O tasks (subtler tidal effect than Interactive)
+    fn moon_phase_tidal_modifier(phase: MoonPhase) -> f64 {
+        match phase {
+            MoonPhase::FullMoon => 1.2,         // High tide: memory pools swell
+            MoonPhase::WaxingGibbous => 1.1,
+            MoonPhase::FirstQuarter => 1.05,
+            MoonPhase::WaxingCrescent => 1.02,
+            MoonPhase::NewMoon => 0.9,          // Low tide: memory ebbs
+            MoonPhase::WaningGibbous => 0.97,
+            MoonPhase::LastQuarter => 0.95,
+            MoonPhase::WaningCrescent => 0.92,
+        }
+    }
+
+    /// Moon phase modifier for network tasks (Mercury-ruled but flows like tides)
+    fn moon_phase_flow_modifier(phase: MoonPhase) -> f64 {
+        match phase {
+            MoonPhase::FullMoon => 1.15,        // Maximum cosmic bandwidth
+            MoonPhase::WaxingGibbous => 1.08,
+            MoonPhase::FirstQuarter => 1.04,
+            MoonPhase::WaxingCrescent => 1.01,
+            MoonPhase::NewMoon => 0.93,         // Dark moon = dark packets
+            MoonPhase::WaningGibbous => 0.98,
+            MoonPhase::LastQuarter => 0.96,
+            MoonPhase::WaningCrescent => 0.94,
+        }
+    }
+
     fn calculate_element_boost(positions: &[PlanetaryPosition], task_type: TaskType) -> f64 {
         let ruling_planet = task_type.ruling_planet();
 
@@ -133,23 +281,51 @@ impl AstrologicalScheduler {
         let task_type = self.classifier.classify(comm);
         let ruling_planet = task_type.ruling_planet();
 
-        let positions = self.get_planetary_positions(now);
+        // Clone positions immediately so we own the data — this avoids borrow
+        // conflicts when later calling &mut self methods (birth_chart_modifier).
+        let positions: Vec<PlanetaryPosition> = self.get_planetary_positions(now).clone();
 
         let planet_pos = positions.iter()
             .find(|p| p.planet == ruling_planet)
             .expect("Ruling planet should always be present");
 
         let planetary_influence = Self::calculate_planetary_influence(planet_pos);
-        let mut element_boost = Self::calculate_element_boost(positions, task_type);
+        let mut element_boost = Self::calculate_element_boost(&positions, task_type);
 
-        // Apply moon phase boost for Interactive tasks (Moon's domain)
-        if task_type == TaskType::Interactive {
-            if let Some(moon_pos) = positions.iter().find(|p| p.planet == Planet::Moon) {
-                if let Some(phase) = moon_pos.moon_phase {
-                    element_boost *= Self::moon_phase_modifier(phase);
+        // ── Moon phase effects (extended to Memory and Network tasks) ──────────
+        if let Some(moon_pos) = positions.iter().find(|p| p.planet == Planet::Moon) {
+            if let Some(phase) = moon_pos.moon_phase {
+                match task_type {
+                    // Interactive tasks: full moon phase modifier (original)
+                    TaskType::Interactive => {
+                        element_boost *= Self::moon_phase_modifier(phase);
+                    }
+                    // Memory tasks: tidal moon effect on memory pools
+                    TaskType::MemoryHeavy => {
+                        element_boost *= Self::moon_phase_tidal_modifier(phase);
+                    }
+                    // Network tasks: moon governs data tides too
+                    TaskType::Network => {
+                        element_boost *= Self::moon_phase_flow_modifier(phase);
+                    }
+                    _ => {}
                 }
             }
         }
+
+        // ── Planetary aspects: boost or penalise based on cosmic alignments ───
+        let enable_aspects = self.enable_aspects;
+        let aspect_modifier = if enable_aspects {
+            let aspects = calculate_aspects(&positions);
+            combined_aspect_modifier(&aspects, ruling_planet)
+        } else {
+            1.0
+        };
+        element_boost *= aspect_modifier;
+
+        // ── Birth chart natal compatibility ───────────────────────────────────
+        let birth_modifier = self.birth_chart_modifier(pid, &positions, task_type);
+        element_boost *= birth_modifier;
 
         let base_priority = match task_type {
             TaskType::Critical => 1000,
@@ -175,6 +351,8 @@ impl AstrologicalScheduler {
             planet_pos,
             planetary_influence,
             element_boost,
+            aspect_modifier,
+            birth_modifier,
         );
 
         SchedulingDecision {
@@ -190,6 +368,8 @@ impl AstrologicalScheduler {
         planet_pos: &PlanetaryPosition,
         influence: f64,
         boost: f64,
+        aspect_modifier: f64,
+        birth_modifier: f64,
     ) -> String {
         let planet_name = planet_pos.planet.name();
         let sign_name = planet_pos.sign.name();
@@ -205,6 +385,28 @@ impl AstrologicalScheduler {
             );
         }
 
+        // Build aspect annotation
+        let aspect_note = if (aspect_modifier - 1.0).abs() > 0.05 {
+            if aspect_modifier > 1.0 {
+                format!(" | △ Aspects: +{:.0}%", (aspect_modifier - 1.0) * 100.0)
+            } else {
+                format!(" | □ Aspects: -{:.0}%", (1.0 - aspect_modifier) * 100.0)
+            }
+        } else {
+            String::new()
+        };
+
+        // Birth chart annotation
+        let natal_note = if (birth_modifier - 1.0).abs() > 0.05 {
+            if birth_modifier > 1.0 {
+                format!(" | 🌟 Natal: +{:.0}%", (birth_modifier - 1.0) * 100.0)
+            } else {
+                format!(" | ☁️ Natal: -{:.0}%", (1.0 - birth_modifier) * 100.0)
+            }
+        } else {
+            String::new()
+        };
+
         if boost < 0.7 {
             // DEBUFFED! Opposing elements clash
             let opposition = match (planet_pos.sign.element(), task_type) {
@@ -215,59 +417,61 @@ impl AstrologicalScheduler {
                 _ => "⚔️ Elemental opposition",
             };
             format!(
-                "⚠️ {} in {} ({}) | {} task DEBUFFED | {}",
-                planet_name,
-                sign_name,
-                element_name,
-                task_type.name(),
-                opposition
+                "⚠️ {} in {} ({}) | {} task DEBUFFED | {}{}{}",
+                planet_name, sign_name, element_name,
+                task_type.name(), opposition, aspect_note, natal_note
             )
         } else if boost > 1.3 {
-            // Strong positive influence
             format!(
-                "✨ {} in {} ({}) | {} task COSMICALLY BLESSED | {} provides divine boost",
-                planet_name,
-                sign_name,
-                element_name,
-                task_type.name(),
-                element_name
+                "✨ {} in {} ({}) | {} task COSMICALLY BLESSED | {} provides divine boost{}{}",
+                planet_name, sign_name, element_name,
+                task_type.name(), element_name, aspect_note, natal_note
             )
         } else if boost > 1.1 {
-            // Moderate positive influence
             format!(
-                "{} in {} | {} task enhanced by favorable {} energy",
-                planet_name,
-                sign_name,
-                task_type.name(),
-                element_name
+                "{} in {} | {} task enhanced by favorable {} energy{}{}",
+                planet_name, sign_name,
+                task_type.name(), element_name, aspect_note, natal_note
             )
         } else {
-            // Neutral
             format!(
-                "{} in {} | {} task neutral | Cosmos balanced",
-                planet_name,
-                sign_name,
-                task_type.name()
+                "{} in {} | {} task neutral | Cosmos balanced{}{}",
+                planet_name, sign_name,
+                task_type.name(), aspect_note, natal_note
             )
         }
+    }
+
+    /// Get a full system daily horoscope using the predictions module
+    pub fn get_daily_horoscope(&mut self, now: DateTime<Utc>) -> String {
+        let positions = self.get_planetary_positions(now).clone();
+        get_system_daily_horoscope(&positions, &now)
     }
 
     /// Get a summary of current astrological conditions
     pub fn get_cosmic_weather(&mut self, now: DateTime<Utc>) -> String {
         use std::fmt::Write;
 
+        // Capture flags before the positions borrow (can't access self fields
+        // while an &mut self borrow is alive via get_planetary_positions).
+        let use_13_signs = self.use_13_signs;
+        let enable_aspects = self.enable_aspects;
+        let enable_cpu_affinity = self.enable_cpu_affinity;
+
+        // Clone positions immediately so we own the data and there's no lingering
+        // &mut self borrow preventing later field access.
+        let positions: Vec<PlanetaryPosition> = self.get_planetary_positions(now).clone();
+
         let mut report = String::from("🌌 COSMIC WEATHER REPORT 🌌\n");
         let _ = writeln!(report, "Current time: {}", now.format("%Y-%m-%d %H:%M:%S UTC"));
-        if self.use_13_signs {
+        if use_13_signs {
             report.push_str("Zodiac system: 13-sign (IAU boundaries with Ophiuchus)\n");
         } else {
             report.push_str("Zodiac system: Traditional 12-sign (tropical)\n");
         }
         report.push('\n');
 
-        let positions = self.get_planetary_positions(now);
-
-        for pos in positions {
+        for pos in &positions {
             let phase_info = if let Some(phase) = pos.moon_phase {
                 format!(" [{}]", phase.name())
             } else {
@@ -369,6 +573,75 @@ impl AstrologicalScheduler {
 
         if !has_tensions {
             report.push_str("   ✌️  The elements are at peace (for now).\n");
+        }
+
+        // ── Planetary Aspects ──────────────────────────────────────────────────
+        if enable_aspects {
+            let aspects = calculate_aspects(&positions);
+            report.push_str("\n🔭 Planetary Aspects:\n");
+            if aspects.is_empty() {
+                report.push_str("   No major aspects active — planets orbit in splendid isolation.\n");
+            } else {
+                for asp in &aspects {
+                    let _ = writeln!(report,
+                        "   {} {} {} {} (orb: {:.1}°, strength: {:.0}%)",
+                        asp.planet_a.name(),
+                        asp.aspect_type.symbol(),
+                        asp.planet_b.name(),
+                        asp.aspect_type.name(),
+                        asp.orb,
+                        asp.strength * 100.0,
+                    );
+                }
+            }
+
+            // Show aspects for each ruling planet
+            report.push_str("\n   Aspect influences on task types:\n");
+            for &tt in &[TaskType::CpuIntensive, TaskType::Network, TaskType::MemoryHeavy, TaskType::System] {
+                let planet = tt.ruling_planet();
+                let modifier = combined_aspect_modifier(&aspects, planet);
+                let desc = describe_aspects(&aspects, planet);
+                let _ = writeln!(report, "   {} {}: {:.0}% — {}",
+                    tt.name(), planet.name(), modifier * 100.0, desc);
+            }
+        }
+
+        // ── Moon Phase Tidal Effects ────────────────────────────────────────────
+        if let Some(moon_pos) = positions.iter().find(|p| p.planet == Planet::Moon) {
+            if let Some(phase) = moon_pos.moon_phase {
+                report.push_str("\n🌊 Moon Phase Tidal Effects:\n");
+                let interactive_mod = Self::moon_phase_modifier(phase);
+                let memory_mod = Self::moon_phase_tidal_modifier(phase);
+                let network_mod = Self::moon_phase_flow_modifier(phase);
+                let _ = writeln!(report, "   Current phase: {} — {:+.0}% Interactive | {:+.0}% Memory | {:+.0}% Network",
+                    phase.name(),
+                    (interactive_mod - 1.0) * 100.0,
+                    (memory_mod - 1.0) * 100.0,
+                    (network_mod - 1.0) * 100.0,
+                );
+            }
+        }
+
+        // ── CPU Affinity Legend ────────────────────────────────────────────────
+        if enable_cpu_affinity {
+            report.push_str("\n🖥️  CPU Elemental Affinity (cycles every 4 CPUs):\n");
+            for (idx, (elem, sign)) in [
+                (Element::Fire,  element_sign(Element::Fire)),
+                (Element::Earth, element_sign(Element::Earth)),
+                (Element::Air,   element_sign(Element::Air)),
+                (Element::Water, element_sign(Element::Water)),
+            ].iter().enumerate() {
+                let _ = writeln!(report, "   CPU {},{},{}… → {} ({}) — best for {} tasks",
+                    idx, idx + 4, idx + 8,
+                    elem.name(), sign,
+                    match elem {
+                        Element::Fire  => "CPU-Intensive",
+                        Element::Earth => "System",
+                        Element::Air   => "Network",
+                        Element::Water => "Memory-Heavy",
+                    }
+                );
+            }
         }
 
         report
